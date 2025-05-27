@@ -1,0 +1,248 @@
+---
+name: Continuous Delivery
+on:
+  workflow_call:
+    inputs:
+      skip_what_if:
+        default: false
+        type: boolean
+      management_groups:
+        type: boolean
+        default: true
+      management_resource_group:
+        type: boolean
+        default: true
+      connectivity_resource_group:
+        type: boolean
+        default: true
+      identity_resource_group:
+        type: boolean
+        default: true
+      destroy:
+        default: false
+        type: boolean
+
+jobs:
+  whatif:
+    name: What If
+    runs-on:
+      self-hosted
+    concurrency: r52510r569-tfstate
+    environment: alz-r52510r569-plan
+    permissions:
+      id-token: write
+      contents: read
+    if: ${{ !inputs.skip_what_if }}
+    env:
+      PARAMETERS_FILE_NAME: parameters.json
+
+    steps:
+      - name: Checkout Bicep Module
+        uses: actions/checkout@v4
+
+      - name: Get Bicep Variables
+        uses: microsoft-azure-landing-zones-cd-tests/alz-r52510r569-templates/.github/actions/bicep-variables@main
+        with:
+          parameters_file_name: ${{ env.PARAMETERS_FILE_NAME }}
+
+      - name: Get On Demand Folder infra-as-code
+        uses: microsoft-azure-landing-zones-cd-tests/alz-r52510r569-templates/.github/actions/bicep-on-demand-folder@main
+        with:
+          repository: "https://github.com/Azure/ALZ-Bicep"
+          releaseArtifactName: "accelerator.zip"
+          releaseVersion: "${{ env.RELEASE_VERSION }}"
+          sourcePath: "infra-as-code"
+          targetPath: "infra-as-code"
+
+
+      - name: Install Bicep and Update Az Module
+        uses: microsoft-azure-landing-zones-cd-tests/alz-r52510r569-templates/.github/actions/bicep-installer@main
+
+      - name: OIDC Login to Tenant
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          enable-AzPSSession: true
+
+      - name: First Deployment Check
+        id: firstDeploymentCheck
+        uses: microsoft-azure-landing-zones-cd-tests/alz-r52510r569-templates/.github/actions/bicep-first-deployment-check@main
+        if: ${{ !inputs.destroy }}
+        with:
+          managementGroupId: ${{ env.MANAGEMENT_GROUP_ID }}
+
+      - name: 'What If: Management Groups Deployment'
+        uses: microsoft-azure-landing-zones-cd-tests/alz-r52510r569-templates/.github/actions/bicep-deploy@main
+        if: ${{ inputs.management_groups && !inputs.destroy }}
+        with:
+          displayName: 'Management Groups Deployment'
+          templateFilePath: './accelerator/test_modules/managementGroup/managementGroup.bicep'
+          templateParametersFilePath: './config/custom-parameters/managementGroup.parameters.all.json'
+          managementGroupId: '${{ env.ROOT_PARENT_MANAGEMENT_GROUP_ID }}'
+          subscriptionId: ''
+          resourceGroupName: ''
+          location: '${{ env.LOCATION }}'
+          deploymentType: 'managementGroup'
+          firstRunWhatIf: 'true'
+          firstDeployment: '${{ env.firstDeployment }}'
+          whatIfEnabled: 'true'
+      - name: 'What If: Management Resource Group Deployment'
+        uses: microsoft-azure-landing-zones-cd-tests/alz-r52510r569-templates/.github/actions/bicep-deploy@main
+        if: ${{ inputs.management_resource_group && !inputs.destroy }}
+        with:
+          displayName: 'Management Resource Group Deployment'
+          templateFilePath: './infra-as-code/bicep/modules/resourceGroup/resourceGroup.bicep'
+          templateParametersFilePath: './config/custom-parameters/resourceGroupManagement.parameters.all.json'
+          managementGroupId: ''
+          subscriptionId: '${{ env.MANAGEMENT_SUBSCRIPTION_ID }}'
+          resourceGroupName: ''
+          location: '${{ env.LOCATION }}'
+          deploymentType: 'subscription'
+          firstRunWhatIf: 'true'
+          firstDeployment: '${{ env.firstDeployment }}'
+          whatIfEnabled: 'true'
+      - name: 'What If: Connectivity Resource Group Deployment'
+        uses: microsoft-azure-landing-zones-cd-tests/alz-r52510r569-templates/.github/actions/bicep-deploy@main
+        if: ${{ inputs.connectivity_resource_group && !inputs.destroy }}
+        with:
+          displayName: 'Connectivity Resource Group Deployment'
+          templateFilePath: './infra-as-code/bicep/modules/resourceGroup/resourceGroup.bicep'
+          templateParametersFilePath: './config/custom-parameters/resourceGroupConnectivity.parameters.all.json'
+          managementGroupId: ''
+          subscriptionId: '${{ env.CONNECTIVITY_SUBSCRIPTION_ID }}'
+          resourceGroupName: ''
+          location: '${{ env.LOCATION }}'
+          deploymentType: 'subscription'
+          firstRunWhatIf: 'true'
+          firstDeployment: '${{ env.firstDeployment }}'
+          whatIfEnabled: 'true'
+      - name: 'What If: Identity Resource Group Deployment'
+        uses: microsoft-azure-landing-zones-cd-tests/alz-r52510r569-templates/.github/actions/bicep-deploy@main
+        if: ${{ inputs.identity_resource_group && !inputs.destroy }}
+        with:
+          displayName: 'Identity Resource Group Deployment'
+          templateFilePath: './infra-as-code/bicep/modules/resourceGroup/resourceGroup.bicep'
+          templateParametersFilePath: './config/custom-parameters/resourceGroupIdentity.parameters.all.json'
+          managementGroupId: ''
+          subscriptionId: '${{ env.IDENTITY_SUBSCRIPTION_ID }}'
+          resourceGroupName: ''
+          location: '${{ env.LOCATION }}'
+          deploymentType: 'subscription'
+          firstRunWhatIf: 'true'
+          firstDeployment: '${{ env.firstDeployment }}'
+          whatIfEnabled: 'true'
+
+      - name: Run Bicep Destroy What If
+        uses: microsoft-azure-landing-zones-cd-tests/alz-r52510r569-templates/.github/actions/bicep-destroy@main
+        if: ${{ inputs.destroy }}
+        with:
+          whatIfEnabled: 'true'
+
+  deploy:
+    name: Deploy
+    needs: whatif
+    if: ${{ always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    runs-on:
+      self-hosted
+    concurrency: r52510r569-tfstate
+    environment: alz-r52510r569-apply
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      PARAMETERS_FILE_NAME: parameters.json
+
+    steps:
+      - name: Checkout Bicep Module
+        uses: actions/checkout@v4
+
+      - name: Get Bicep Variables
+        uses: microsoft-azure-landing-zones-cd-tests/alz-r52510r569-templates/.github/actions/bicep-variables@main
+        with:
+          parameters_file_name: ${{ env.PARAMETERS_FILE_NAME }}
+
+      - name: Get On Demand Folder infra-as-code
+        uses: microsoft-azure-landing-zones-cd-tests/alz-r52510r569-templates/.github/actions/bicep-on-demand-folder@main
+        with:
+          repository: "https://github.com/Azure/ALZ-Bicep"
+          releaseArtifactName: "accelerator.zip"
+          releaseVersion: "${{ env.RELEASE_VERSION }}"
+          sourcePath: "infra-as-code"
+          targetPath: "infra-as-code"
+
+
+      - name: Install Bicep and Update Az Module
+        uses: microsoft-azure-landing-zones-cd-tests/alz-r52510r569-templates/.github/actions/bicep-installer@main
+
+      - name: OIDC Login to Tenant
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          enable-AzPSSession: true
+
+      - name: 'Deploy: Management Groups Deployment'
+        uses: microsoft-azure-landing-zones-cd-tests/alz-r52510r569-templates/.github/actions/bicep-deploy@main
+        if: ${{ inputs.management_groups && !inputs.destroy }}
+        with:
+          displayName: 'Management Groups Deployment'
+          templateFilePath: './accelerator/test_modules/managementGroup/managementGroup.bicep'
+          templateParametersFilePath: './config/custom-parameters/managementGroup.parameters.all.json'
+          managementGroupId: '${{ env.ROOT_PARENT_MANAGEMENT_GROUP_ID }}'
+          subscriptionId: ''
+          resourceGroupName: ''
+          location: '${{ env.LOCATION }}'
+          deploymentType: 'managementGroup'
+          firstRunWhatIf: 'true'
+          whatIfEnabled: 'false'
+      - name: 'Deploy: Management Resource Group Deployment'
+        uses: microsoft-azure-landing-zones-cd-tests/alz-r52510r569-templates/.github/actions/bicep-deploy@main
+        if: ${{ inputs.management_resource_group && !inputs.destroy }}
+        with:
+          displayName: 'Management Resource Group Deployment'
+          templateFilePath: './infra-as-code/bicep/modules/resourceGroup/resourceGroup.bicep'
+          templateParametersFilePath: './config/custom-parameters/resourceGroupManagement.parameters.all.json'
+          managementGroupId: ''
+          subscriptionId: '${{ env.MANAGEMENT_SUBSCRIPTION_ID }}'
+          resourceGroupName: ''
+          location: '${{ env.LOCATION }}'
+          deploymentType: 'subscription'
+          firstRunWhatIf: 'true'
+          whatIfEnabled: 'false'
+      - name: 'Deploy: Connectivity Resource Group Deployment'
+        uses: microsoft-azure-landing-zones-cd-tests/alz-r52510r569-templates/.github/actions/bicep-deploy@main
+        if: ${{ inputs.connectivity_resource_group && !inputs.destroy }}
+        with:
+          displayName: 'Connectivity Resource Group Deployment'
+          templateFilePath: './infra-as-code/bicep/modules/resourceGroup/resourceGroup.bicep'
+          templateParametersFilePath: './config/custom-parameters/resourceGroupConnectivity.parameters.all.json'
+          managementGroupId: ''
+          subscriptionId: '${{ env.CONNECTIVITY_SUBSCRIPTION_ID }}'
+          resourceGroupName: ''
+          location: '${{ env.LOCATION }}'
+          deploymentType: 'subscription'
+          firstRunWhatIf: 'true'
+          whatIfEnabled: 'false'
+      - name: 'Deploy: Identity Resource Group Deployment'
+        uses: microsoft-azure-landing-zones-cd-tests/alz-r52510r569-templates/.github/actions/bicep-deploy@main
+        if: ${{ inputs.identity_resource_group && !inputs.destroy }}
+        with:
+          displayName: 'Identity Resource Group Deployment'
+          templateFilePath: './infra-as-code/bicep/modules/resourceGroup/resourceGroup.bicep'
+          templateParametersFilePath: './config/custom-parameters/resourceGroupIdentity.parameters.all.json'
+          managementGroupId: ''
+          subscriptionId: '${{ env.IDENTITY_SUBSCRIPTION_ID }}'
+          resourceGroupName: ''
+          location: '${{ env.LOCATION }}'
+          deploymentType: 'subscription'
+          firstRunWhatIf: 'true'
+          whatIfEnabled: 'false'
+
+      - name: Run Bicep Destroy
+        uses: microsoft-azure-landing-zones-cd-tests/alz-r52510r569-templates/.github/actions/bicep-destroy@main
+        if: ${{ inputs.destroy }}
+        with:
+          whatIfEnabled: 'false'
